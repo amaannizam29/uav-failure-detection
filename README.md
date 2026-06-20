@@ -38,7 +38,7 @@ windows by ~91% (90 → 8). Mean early-warning margin on synthetic flights was
 ~94 s before cutoff. Top features are physically interpretable: GPS HDOP slope,
 battery voltage slope, motor-output spread, magnetometer innovation slope.
 
-![results](reports/results_overview.png)
+![results](reports/results_overview_multi.png)
 
 > Honesty note: synthetic flights are cleaner and more separable than real logs,
 > so these numbers will drop on real data. The value is the architecture, the
