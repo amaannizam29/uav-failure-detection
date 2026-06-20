@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>UAV Ground Control — Failure Response Hub</title>
+<style>
+  :root{
+    --bg:#0a0e14; --panel:#11161f; --panel2:#161d28; --line:#222c3a;
+    --txt:#e6edf3; --dim:#8aa0b5; --ok:#2ecc71; --warn:#f1c40f;
+    --crit:#ff4757; --accent:#3aa0ff; --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial;padding:18px;}
+  h1{font-size:18px;letter-spacing:.5px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:14px;font-family:var(--mono)}
+  .grid{display:grid;grid-template-columns:1.3fr 1fr;gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:0 0 10px}
+  .tele{display:flex;gap:20px;flex-wrap:wrap}
+  .tele div span{display:block}
+  .tele .lbl{color:var(--dim);font-size:11px}
+  .tele .val{font-size:26px;font-weight:600;font-family:var(--mono)}
+  .faults{display:flex;flex-direction:column;gap:10px}
+  .f{display:grid;grid-template-columns:78px 1fr 46px;align-items:center;gap:10px}
+  .f .name{font-size:13px;font-family:var(--mono)}
+  .bar{height:14px;background:var(--panel2);border-radius:7px;overflow:hidden;border:1px solid var(--line)}
+  .bar > i{display:block;height:100%;width:0;background:var(--ok);transition:width .12s,background .2s}
+  .f .pct{font-size:12px;font-family:var(--mono);color:var(--dim);text-align:right}
+  .f.confirmed .name{color:var(--crit);font-weight:700}
+  .controls{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  select,button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--txt);padding:8px 12px}
+  select{min-width:230px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#031018;font-weight:600}
+  input[type=range]{accent-color:var(--accent)}
+  .pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+  .pill.live{color:var(--crit);border-color:var(--crit)}
+  .log{font-family:var(--mono);font-size:12px;background:#070a0f;border:1px solid var(--line);
+    border-radius:8px;padding:10px;height:150px;overflow:auto}
+  .log div{padding:2px 0;border-bottom:1px solid #0e141c}
+  .log .send{color:var(--accent)} .log .auto{color:var(--warn)} .log .crit{color:var(--crit)} .log .err{color:var(--crit)}
+  .overlay{position:fixed;inset:0;background:rgba(4,7,11,.72);display:none;align-items:center;justify-content:center;z-index:30}
+  .overlay.on{display:flex}
+  .modal{width:min(560px,92vw);background:var(--panel);border:1px solid var(--crit);border-radius:14px;padding:22px;box-shadow:0 0 40px rgba(255,71,87,.25)}
+  .modal .tag{display:inline-block;font-family:var(--mono);font-size:11px;color:var(--crit);border:1px solid var(--crit);border-radius:20px;padding:2px 10px;margin-bottom:8px}
+  .modal h3{margin:0 0 4px;font-size:20px}
+  .modal .reason{color:var(--dim);font-size:13px;margin-bottom:16px;line-height:1.4}
+  .ring{float:right;margin:-58px 0 0 0}
+  .opts{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+  .opt{display:flex;justify-content:space-between;align-items:center;text-align:left;width:100%}
+  .opt.def{border-color:var(--crit)}
+  .opt .code{font-family:var(--mono);font-weight:700}
+  .opt .desc{color:var(--dim);font-size:12px}
+  .opt .deftag{font-size:10px;color:var(--crit);font-family:var(--mono)}
+  .done{color:var(--ok);font-family:var(--mono);font-size:13px;margin-top:10px;display:none}
+</style>
+</head>
+<body>
+  <h1>UAV GROUND CONTROL — FAILURE RESPONSE HUB</h1>
+  <div class="sub" id="meta">source: predictive failure detector (multi-label) · backend connected</div>
+
+  <div class="controls">
+    <select id="flightSel"><option>loading flights…</option></select>
+    <button class="primary" id="load">Load</button>
+    <button id="play" disabled>Start</button>
+    <button id="reset" disabled>Reset</button>
+    <label style="color:var(--dim);font-size:12px">speed
+      <input type="range" id="speed" min="1" max="40" value="16"/></label>
+    <span class="pill" id="mode">idle</span>
+    <span id="clock" style="font-family:var(--mono);color:var(--dim)"></span>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Telemetry</h2>
+      <div class="tele">
+        <div><span class="lbl">FLIGHT TIME</span><span class="val" id="t">0s</span></div>
+        <div><span class="lbl">BATTERY</span><span class="val" id="v">—</span></div>
+        <div><span class="lbl">STATUS</span><span class="val" id="status" style="color:var(--ok)">IDLE</span></div>
+      </div>
+      <h2 style="margin-top:18px">Fault probability (confirmed after smoothing)</h2>
+      <div class="faults" id="faults"></div>
+    </div>
+    <div class="card">
+      <h2>Command log → UAV</h2>
+      <div class="log" id="log"></div>
+      <h2 style="margin-top:14px">Notes</h2>
+      <div style="color:var(--dim);font-size:12px;line-height:1.5">
+        Pick a logged flight or <b>MAVLink [LIVE]</b>. Detector raises confirmed
+        faults; the hub offers ranked actions with a 5s countdown and sends the
+        safe default if the operator does not respond. RTL is hidden when GPS or
+        compass is unreliable.
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <span class="tag" id="modalTag">FAULT DETECTED</span>
+      <svg class="ring" width="56" height="56" viewBox="0 0 56 56">
+        <circle cx="28" cy="28" r="24" fill="none" stroke="#222c3a" stroke-width="6"/>
+        <circle id="ringFg" cx="28" cy="28" r="24" fill="none" stroke="#ff4757"
+                stroke-width="6" stroke-linecap="round" transform="rotate(-90 28 28)"
+                stroke-dasharray="150.8" stroke-dashoffset="0"/>
+        <text id="ringTxt" x="28" y="33" text-anchor="middle" fill="#e6edf3" font-family="monospace" font-size="18">5</text>
+      </svg>
+      <h3 id="modalTitle">—</h3>
+      <div class="reason" id="modalReason">—</div>
+      <div class="opts" id="opts"></div>
+      <div class="done" id="done">COMMAND SENT.</div>
+    </div>
+  </div>
+
+<script>
+const CMD_MAP={RTL:"MAV_CMD_NAV_RETURN_TO_LAUNCH",LAND:"MAV_CMD_NAV_LAND",
+  POSHOLD:"MODE_POSHOLD",ALTHOLD:"MODE_ALTHOLD",CONTINUE:"NO_OP"};
+let FAULTS=["battery","gps","compass","motor"];
+let STREAM=null, i=0, timer=null, armedSize=0, awaiting=false, cdTimer=null;
+let liveSrc=null, mode="idle";
+
+const faultsEl=document.getElementById('faults'), barEls={};
+function buildBars(){
+  faultsEl.innerHTML='';
+  FAULTS.forEach(f=>{
+    const row=document.createElement('div'); row.className='f'; row.id='f_'+f;
+    row.innerHTML=`<span class="name">${f.toUpperCase()}</span>
+      <div class="bar"><i id="bar_${f}"></i></div><span class="pct" id="pct_${f}">0%</span>`;
+    faultsEl.appendChild(row); barEls[f]=row;
+  });
+}
+buildBars();
+
+function logLine(html,cls=''){const l=document.getElementById('log');const d=document.createElement('div');
+  if(cls)d.className=cls; d.innerHTML=html; l.appendChild(d); l.scrollTop=l.scrollHeight;}
+
+// ---- load flight list ----
+fetch('/api/flights').then(r=>r.json()).then(d=>{
+  const sel=document.getElementById('flightSel'); sel.innerHTML='';
+  const live=document.createElement('option'); live.value='__LIVE__';
+  live.textContent='🔴 MAVLink [LIVE]'; sel.appendChild(live);
+  d.flights.forEach(p=>{const o=document.createElement('option');o.value=p;
+    o.textContent=p.replace('data/','');sel.appendChild(o);});
+}).catch(()=>{document.getElementById('flightSel').innerHTML='<option>backend not reachable</option>';});
+
+document.getElementById('load').onclick=()=>{
+  const v=document.getElementById('flightSel').value;
+  stopAll();
+  if(v==='__LIVE__'){ startLive(); }
+  else { loadCsv(v); }
+};
+
+// ---- CSV mode ----
+function loadCsv(flight){
+  mode="csv"; setPill('loading…');
+  fetch('/api/stream?flight='+encodeURIComponent(flight)).then(r=>r.json()).then(d=>{
+    if(d.error){ setPill('error'); logLine('<span class="err">'+d.error+'</span>'); return; }
+    STREAM=d; FAULTS=d.faults; buildBars();
+    i=0; armedSize=0; awaiting=false;
+    document.getElementById('meta').textContent=`flight: ${d.flight} · multi-label detector · backend`;
+    document.getElementById('play').disabled=false;
+    document.getElementById('reset').disabled=false;
+    setPill('ready'); renderFrame(STREAM.frames[0]);
+    play();
+  });
+}
+function step(){
+  if(awaiting||!STREAM) return;
+  if(i>=STREAM.frames.length){ stop(); logLine('— replay complete —'); setPill('done'); return; }
+  handleFrame(STREAM.frames[i]); i++;
+}
+function play(){ if(timer||!STREAM)return; const spd=+document.getElementById('speed').value;
+  timer=setInterval(step,Math.max(20,1000/STREAM.rate_hz/spd*10));
+  document.getElementById('play').textContent='Pause'; setPill('replay'); }
+function stop(){ clearInterval(timer); timer=null; document.getElementById('play').textContent='Start'; }
+document.getElementById('play').onclick=()=> timer?stop():play();
+document.getElementById('speed').oninput=()=>{ if(timer){stop();play();} };
+document.getElementById('reset').onclick=()=>{ stopAll(); if(STREAM){i=0;armedSize=0;awaiting=false;
+  document.getElementById('log').innerHTML=''; renderFrame(STREAM.frames[0]); setPill('ready'); } };
+
+// ---- LIVE mode ----
+function startLive(){
+  mode="live"; FAULTS=["battery","gps","compass","motor"]; buildBars();
+  armedSize=0; awaiting=false;
+  document.getElementById('meta').textContent='source: LIVE MAVLink feed · multi-label detector';
+  document.getElementById('play').disabled=true; document.getElementById('reset').disabled=false;
+  setPill('LIVE', true); logLine('Opening live MAVLink stream…');
+  liveSrc=new EventSource('/api/live');
+  liveSrc.onmessage=e=>{
+    const d=JSON.parse(e.data);
+    if(d.info){ logLine(d.info); return; }
+    if(d.error){ logLine('<span class="err">LIVE: '+d.error+'</span>'); setPill('live error',true); liveSrc.close(); return; }
+    if(d.frame){ handleFrame(d.frame); }
+  };
+  liveSrc.onerror=()=>{ logLine('<span class="err">live stream disconnected</span>'); setPill('disconnected',true); };
+}
+
+function stopAll(){
+  stop(); if(liveSrc){liveSrc.close();liveSrc=null;}
+  clearInterval(cdTimer); awaiting=false;
+  document.getElementById('overlay').classList.remove('on');
+}
+function setPill(txt,live=false){const p=document.getElementById('mode');p.textContent=txt;p.classList.toggle('live',live);}
+
+// ---- shared frame handling ----
+function renderFrame(fr){
+  document.getElementById('t').textContent=fr.t+'s';
+  document.getElementById('v').textContent=fr.volt+' V';
+  document.getElementById('clock').textContent = (mode==='csv'&&STREAM)?`frame ${i+1}/${STREAM.frames.length}`:(fr.uav_mode?('UAV mode: '+fr.uav_mode):'live');
+  FAULTS.forEach(f=>{const p=fr.probs[f]??0;const bar=document.getElementById('bar_'+f);
+    bar.style.width=Math.round(p*100)+'%';
+    const conf=fr.active.includes(f);
+    bar.style.background=conf?'var(--crit)':(p>0.5?'var(--warn)':'var(--ok)');
+    document.getElementById('pct_'+f).textContent=Math.round(p*100)+'%';
+    barEls[f].classList.toggle('confirmed',conf);});
+  const st=document.getElementById('status');
+  if(fr.active.length){st.textContent=(fr.critical?'CRITICAL — ':'')+fr.active.join(' + ').toUpperCase();
+    st.style.color=fr.critical?'var(--crit)':'var(--warn)';}
+  else{st.textContent='NOMINAL';st.style.color='var(--ok)';}
+}
+function handleFrame(fr){
+  renderFrame(fr);
+  if(!awaiting && fr.active.length>armedSize){ armedSize=fr.active.length; armDecision(fr); }
+}
+
+// ---- action overlay + countdown ----
+function armDecision(fr){
+  awaiting=true; const dec=fr.decision;
+  document.getElementById('modalTag').textContent=(fr.critical?'CRITICAL ':'')+'FAULT: '+fr.active.join(' + ').toUpperCase();
+  document.getElementById('modalTitle').textContent='Recommended: '+dec.default+' ('+labelFor(dec,dec.default)+')';
+  document.getElementById('modalReason').textContent=dec.reason;
+  logLine(`<span class="${fr.critical?'crit':''}">⚠ t=${fr.t}s confirmed: ${fr.active.join('+')} (severity ${dec.severity})</span>`);
+  const opts=document.getElementById('opts'); opts.innerHTML='';
+  document.getElementById('done').style.display='none';
+  dec.options.forEach(([code,desc])=>{
+    const b=document.createElement('button'); b.className='opt'+(code===dec.default?' def':'');
+    b.innerHTML=`<span><span class="code">${code}</span> <span class="desc">${desc}</span></span>`+
+      (code===dec.default?'<span class="deftag">DEFAULT</span>':'');
+    b.onclick=()=>sendCommand(code,fr,false); opts.appendChild(b);
+  });
+  document.getElementById('overlay').classList.add('on'); startCountdown(dec,fr);
+}
+function labelFor(dec,code){const o=dec.options.find(x=>x[0]===code);return o?o[1]:code;}
+function startCountdown(dec,fr){
+  let left=dec.countdown; const total=dec.countdown||5;
+  const fg=document.getElementById('ringFg'),txt=document.getElementById('ringTxt'),C=150.8;
+  const tick=()=>{txt.textContent=left;fg.setAttribute('stroke-dashoffset',(C*(1-left/total)).toFixed(1));
+    if(left<=0){clearInterval(cdTimer);sendCommand(dec.default,fr,true);return;} left--;};
+  tick(); cdTimer=setInterval(tick,1000);
+}
+function sendCommand(code,fr,auto){
+  clearInterval(cdTimer);
+  const tag=auto?'<span class="auto">[AUTO]</span>':'<span class="send">[OPERATOR]</span>';
+  if(mode==='live'){
+    logLine(`${tag} t=${fr.t}s → sending ${code} to UAV…`,'send');
+    fetch('/api/command?cmd='+encodeURIComponent(code)).then(r=>r.json()).then(d=>{
+      if(d.sent) logLine(`<span class="send">✓ ${code} ACCEPTED → ${d.detail}</span>`);
+      else logLine(`<span class="err">✗ ${code} REJECTED: ${d.detail}</span>`);
+    }).catch(()=>logLine('<span class="err">command request failed (server down?)</span>'));
+  } else {
+    logLine(`${tag} t=${fr.t}s → SEND ${code} → UAV  (${CMD_MAP[code]})  · replay: logged only, flight continues`,'send');
+  }
+  document.getElementById('done').style.display='block';
+  document.getElementById('done').textContent=(auto?'No operator response — default ':'Operator selected ')+code+(mode==='live'?' sent to vehicle.':' (logged).');
+  setTimeout(()=>{document.getElementById('overlay').classList.remove('on');awaiting=false;
+    if(mode==='csv'&&!timer&&STREAM&&i<STREAM.frames.length)play();},900);
+}
+</script>
+</body>
+</html>
