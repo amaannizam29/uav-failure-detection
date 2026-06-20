@@ -1,96 +1,162 @@
-# UAV Predictive Failure Detection
+# UAV Predictive Failure Detection and Response System
 
-A predictive maintenance and failure-detection pipeline for fixed-wing / VTOL
-UAVs. It ingests MAVLink flight telemetry, extracts windowed features, and a
-classifier flags four degradation modes (battery, GPS, compass, motor) **before
-hard cutoff**, giving an early-warning margin rather than a post-crash log.
+A closed-loop predictive maintenance system for fixed-wing / VTOL UAVs. It reads
+flight telemetry (replayed, simulated, or live over MAVLink), detects single and
+**simultaneous** component faults during their early onset, and gives a ground
+operator ranked, safety-aware recovery actions with a 5-second auto-default. In
+live mode it sends the chosen action back to the vehicle as a real MAVLink
+command.
 
-The pipeline is schema-compatible with ArduPilot DataFlash / MAVLink, so it runs
-on real ArduPilot SITL logs and on a synthetic generator with identical columns.
+The whole pipeline is schema-compatible with ArduPilot DataFlash / MAVLink, so a
+synthetic generator, ArduPilot SITL, and a real flight controller all feed the
+same code unchanged.
 
-## Result (held-out flights, flight-level split)
+## The four stages
 
-| Metric | Value |
-|---|---|
-| Accuracy | 0.99 |
-| Macro-F1 | 0.99 |
-| Failure flights detected | 36 / 36 |
-| Mean early warning before cutoff | ~94 s |
+1. **Sense** — telemetry from a CSV, SITL, or a real FC over MAVLink.
+2. **Detect** — a multi-label model flags which faults are developing, several at
+   once if needed, before hard cutoff.
+3. **Decide** — a deterministic safety policy maps active faults to ranked actions,
+   hiding options that are unsafe for the current fault (RTL needs GPS and compass,
+   so it is removed on those faults).
+4. **Act** — the operator hub shows the alarm and a countdown; the operator picks
+   an action or the safe default auto-fires. Live mode sends a real mode command.
 
-Top predictive features are physically interpretable: GPS HDOP slope, battery
-voltage slope, motor-output spread, magnetometer innovation slope.
+## Results
+
+Multi-label detector, held-out **flights** (no leakage), noisy multi-fault data:
+
+| Fault | Precision | Recall | F1 |
+|---|---|---|---|
+| Battery | 0.98 | 0.96 | 0.97 |
+| GPS | 0.99 | 0.99 | 0.99 |
+| Compass | 0.98 | 0.99 | 0.99 |
+| Motor | 0.99 | 0.98 | 0.99 |
+
+Temporal smoothing (confirm after 3 consecutive windows) cut false-positive
+windows by ~91% (90 → 8). Mean early-warning margin on synthetic flights was
+~94 s before cutoff. Top features are physically interpretable: GPS HDOP slope,
+battery voltage slope, motor-output spread, magnetometer innovation slope.
 
 ![results](reports/results_overview.png)
 
-> Note on the numbers: synthetic flights are cleaner and more separable than
-> real flight logs. The same pipeline on real SITL/DataFlash data is expected to
-> score lower. The value here is the architecture and the early-warning margin,
-> not the headline accuracy.
+> Honesty note: synthetic flights are cleaner and more separable than real logs,
+> so these numbers will drop on real data. The value is the architecture, the
+> early-warning margin, and the noise/false-alarm handling, not the headline
+> accuracy. Recalibrate on real flight logs before drawing conclusions.
 
 ## Architecture
 
 ```
-SITL / real FC ──MAVLink──> logger/mavlink_logger.py ──CSV──┐
-                                                            ├─> ml/features.py ─> ml/train.py ─> models/
-sim/generate_flight_data.py ──CSV (same schema)─────────────┘                                    │
-                                                                                                 v
-                                                              dashboard/app.py  (live probabilities + alarm)
+  CSV replay ┐                         ┌─ windowing → 53 features → multi-label
+  SITL       ├─ MAVLink or CSV ──────► │  model → per-fault probabilities →
+  real FC    ┘                         │  temporal smoothing → decision policy
+                                       └──────────────┬──────────────────────
+                                                      │ decision stream
+                                                      ▼
+                                        operator hub (faults + ranked actions
+                                        + 5s countdown + auto-default)
+                                                      │ chosen action
+                                                      ▼
+                              command out: MAVLink set_mode → vehicle  [live only]
 ```
+
+Two paths, identical downstream. **Replay**: a CSV is scored and the hub replays
+the decision timeline (commands logged only). **Live**: the server holds an open
+MAVLink link, runs the model per incoming window, streams decisions, and sends
+commands back. Live is the only path that closes the loop.
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
 
-# 1. generate a synthetic dataset (or skip and use real SITL logs)
-python sim/generate_flight_data.py --flights 60 --out data/raw
+# generate training data and train the multi-label detector
+python sim/generate_multifault.py --flights 120 --out data/multi
+python ml/train_multi.py
 
-# 2. train + evaluate (writes models/ and reports/)
-python ml/train.py
-
-# 3. render the results figure
-python ml/make_report_figure.py
-
-# 4. live dashboard
-streamlit run dashboard/app.py
+# start the operator hub backend, then open http://localhost:8000
+python dashboard/server.py
 ```
 
-## Real-data path (ArduPilot SITL)
+In the hub, pick any flight from the dropdown and press Load, or pick
+**MAVLink [LIVE]** to connect to a live feed.
+
+### Live demo without ArduPilot (fake MAVLink feed)
 
 ```bash
-# terminal 1: launch QuadPlane SITL
-sim_vehicle.py -v ArduPlane -f quadplane --console --map
-
-# terminal 2: log live telemetry to the same CSV schema
-python logger/mavlink_logger.py --conn udp:127.0.0.1:14550 --out data/raw/live.csv
+# terminal 1: stream a recorded flight as live MAVLink telemetry
+python sim/fake_mavlink_feed.py --flight data/raw/STRESS_multi.csv --loop --speed 5
+# terminal 2
+python dashboard/server.py
+# open http://localhost:8000, pick MAVLink [LIVE], Load
 ```
 
-Then re-run `ml/train.py` (or just inference in the dashboard) on the real log.
+This demonstrates live detection. It cannot execute commands, because a recording
+is not a flight stack. For a real closed loop, use SITL or a real drone.
 
-## Failure modes modelled
+### Live with ArduPilot SITL
+
+```bash
+sim_vehicle.py -v ArduPlane -f quadplane --console
+python dashboard/server.py
+# open http://localhost:8000, pick MAVLink [LIVE], Load
+# inject faults in the SITL console with SIM_ parameters
+```
+
+## Faults modelled
 
 | Mode | Signature the model keys on |
 |---|---|
-| Battery | accelerating voltage collapse, rising internal resistance under load |
+| Battery | accelerating voltage collapse, rising draw under load |
 | GPS | satellite dropout, HDOP climb, EKF position innovation rise |
-| Compass | magnetometer field-magnitude drift, EKF mag innovation, yaw drift |
+| Compass | magnetometer field drift, EKF mag innovation, yaw drift |
 | Motor | one motor PWM saturating toward max, attitude-error and vibration rise |
 
 ## Repo layout
 
 ```
-sim/        synthetic flight generator (ArduPilot-schema CSV)
-logger/     pymavlink logger for live SITL / real FC
-ml/         feature extraction, training, reporting
-dashboard/  Streamlit live failure dashboard
+sim/        synthetic generators (single-fault, multi-fault, stress) + fake MAVLink feed
+logger/     pymavlink logger for capturing live SITL / real flights to CSV
+ml/         features, training (single + multi-label), policy, stream core, reporting
+dashboard/  operator hub (standalone + server-driven) and the backend server
 data/       generated / logged flight CSVs
-models/     trained model + metrics
+models/     trained models + metrics
 reports/    figures + lead-time table
-docs/       architecture, requirements, risk assessment
+docs/       full system documentation (SYSTEM_DOCUMENTATION.md)
 ```
 
-## Limitations
+Start with `docs/SYSTEM_DOCUMENTATION.md` for the in-depth reference, including
+the step-by-step path to connecting a real drone.
 
-- Synthetic data is a stand-in for real flight logs; validate on SITL/real logs.
-- Failure injectors are deterministic profiles, not high-fidelity fault physics.
-- Single-fault assumption; concurrent faults are out of scope for v1.
+## What works today
+
+- Detect single and simultaneous faults from telemetry.
+- Tolerate noisy telemetry (training noise + temporal smoothing).
+- Replay any logged flight with the full decision timeline.
+- Connect to a live MAVLink feed and detect faults in real time.
+- Present ranked, safety-aware actions with a 5-second auto-default.
+- Send a real MAVLink mode command to a connected vehicle.
+
+## Limitations and what is not done
+
+- It detects fault onset; it cannot foresee a fault from a perfectly healthy reading.
+- Command-out sends a real command but does **not** yet read COMMAND_ACK to
+  confirm execution, and has no pre-arm / failsafe / RC-override checks. Not safe
+  for real hardware until those are added (see docs section 8).
+- Detection numbers are from synthetic data; recalibrate on real logs.
+- Actions for concurrent faults use highest-severity selection, not joint optimisation.
+
+## Roadmap to a real drone
+
+Summarised here, detailed in `docs/SYSTEM_DOCUMENTATION.md` section 8:
+
+1. Acknowledge-confirm commands (verify the mode actually changed, retry on failure).
+2. Pre-send checks (armed, GPS fix, mode available, no active failsafe).
+3. Resend on lossy links; failsafe and RC-override awareness.
+4. Validate in SITL → bench with props off → supervised hover → missions.
+5. Retrain and recalibrate thresholds on real flight logs.
+
+## License
+
+MIT. See `LICENSE`.
